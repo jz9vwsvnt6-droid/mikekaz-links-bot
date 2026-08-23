@@ -465,12 +465,16 @@ def message_link(chat_id, message_id):
 
 
 def save_links(chat_id, message_id, text, links, author):
+    """Сохраняет сообщение. Если в нём есть ссылки (обычные или спрятанные
+    за гиперссылкой) — по одной строке на каждую. Если ссылок нет (просто
+    текст/цитата) — всё равно сохраняем ОДНУ строку с пустым link: при
+    отображении бот в этом случае ведёт на само сообщение в чате."""
     category = categorize(text)
     subcategory = subcategorize(category, text)
     title = text.strip().replace("\n", " ")[:200]
     conn = db()
     with conn:
-        for link in links:
+        for link in (links or [""]):
             conn.execute(
                 "INSERT INTO links (chat_id, message_id, category, subcategory, title, link, author, created_at) "
                 "VALUES (?,?,?,?,?,?,?,?)",
@@ -724,7 +728,7 @@ def handle_chatinfo(chat_id):
 def handle_export(chat_id):
     conn = db()
     rows = conn.execute(
-        "SELECT category, COALESCE(subcategory, 'Общее'), title, link, created_at FROM links "
+        "SELECT category, COALESCE(subcategory, 'Общее'), title, link, message_id, created_at FROM links "
         "WHERE chat_id=? ORDER BY category, subcategory, id",
         (chat_id,),
     ).fetchall()
@@ -734,8 +738,11 @@ def handle_export(chat_id):
         return
 
     by_cat = {}
-    for cat, sub, title, link, created_at in rows:
-        by_cat.setdefault(cat, {}).setdefault(sub, []).append((title, link, created_at))
+    for cat, sub, title, link, message_id, created_at in rows:
+        # Если внешней ссылки нет (сообщение было просто текстом/цитатой) —
+        # ведём на само сообщение в чате, если оно доступно.
+        target = message_link(chat_id, message_id) or link or ""
+        by_cat.setdefault(cat, {}).setdefault(sub, []).append((title, target, created_at))
 
     lines = ["# Ссылки по темам\n"]
     for cat, subs in by_cat.items():
@@ -745,9 +752,12 @@ def handle_export(chat_id):
         for sub, items in subs.items():
             if has_multiple_subs:
                 lines.append(f"\n### {sub} ({len(items)})\n")
-            for title, link, created_at in items:
+            for title, target, created_at in items:
                 date = created_at[:10]
-                lines.append(f"- **{date}** — {title[:120]} — [ссылка]({link})")
+                if target:
+                    lines.append(f"- **{date}** — {title[:120]} — [ссылка]({target})")
+                else:
+                    lines.append(f"- **{date}** — {title[:120]}")
 
     path = "/tmp/export.md"
     with open(path, "w") as f:
@@ -834,11 +844,14 @@ def process_update(update):
         handle_debug(chat_id)
         return
 
+    # Сохраняем ЛЮБОЕ обычное сообщение (не команду), даже если в нём нет
+    # внешней ссылки — это может быть просто текст/цитата, и пользователь
+    # всё равно хочет находить его через /topics с переходом к самому
+    # сообщению в чате.
     links = extract_links(text, msg.get("entities", []))
-    if links:
-        author = msg.get("from", {}).get("first_name", "unknown")
-        category = save_links(chat_id, msg["message_id"], text, links, author)
-        log.info("Saved %d link(s) to '%s' from chat %s", len(links), category, chat_id)
+    author = msg.get("from", {}).get("first_name", "unknown")
+    category = save_links(chat_id, msg["message_id"], text, links, author)
+    log.info("Saved message (%d link(s)) to '%s' from chat %s", len(links), category, chat_id)
 
 
 def main():
