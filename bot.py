@@ -31,6 +31,24 @@ API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 URL_RE = re.compile(r"https?://\S+")
 
+
+def extract_links(text, entities):
+    """Собирает ссылки из текста сообщения ДВУМЯ способами: обычным regex по
+    видимому тексту (ловит ссылки, вставленные как есть, например
+    https://example.com) и по entities типа "text_link" (ловит ссылки,
+    спрятанные за кликабельным текстом — например, когда в сообщении
+    написано "подробнее тут", а сама ссылка видна только в метаданных).
+    Без второго способа такие сообщения (типичные при пересылке постов из
+    каналов) молча пропускались — в тексте физически не было "http", хотя
+    сообщение явно содержало ссылку."""
+    links = list(URL_RE.findall(text))
+    for entity in entities or []:
+        if entity.get("type") == "text_link":
+            url = entity.get("url")
+            if url and url not in links:
+                links.append(url)
+    return links
+
 CATEGORY_RULES = [
     ("Промпты и гайды", r"промпт|prompt"),
     ("Курсы и обучение", r"курс|обучени|учебник|роадмап|лекци"),
@@ -816,7 +834,7 @@ def process_update(update):
         handle_debug(chat_id)
         return
 
-    links = URL_RE.findall(text)
+    links = extract_links(text, msg.get("entities", []))
     if links:
         author = msg.get("from", {}).get("first_name", "unknown")
         category = save_links(chat_id, msg["message_id"], text, links, author)
