@@ -41,6 +41,7 @@ CATEGORY_RULES = [
     ("Развлечения", r"фильм|подкаст|кино|сериал"),
     ("ИИ-инструменты", r"нейронк|ии.?инструмент|ai.?tool|chatgpt|claude|gpt|скилл|figma|huggingface|github"),
 ]
+CATEGORY_NAMES = [name for name, _ in CATEGORY_RULES] + ["Разное"]
 
 
 def categorize(text: str) -> str:
@@ -49,6 +50,97 @@ def categorize(text: str) -> str:
         if re.search(pattern, low):
             return name
     return "Разное"
+
+
+def cat_index(category: str) -> int:
+    try:
+        return CATEGORY_NAMES.index(category)
+    except ValueError:
+        return len(CATEGORY_NAMES) - 1  # "Разное"
+
+
+def cat_by_index(idx: int):
+    if 0 <= idx < len(CATEGORY_NAMES):
+        return CATEGORY_NAMES[idx]
+    return None
+
+
+# Подтемы внутри каждой темы верхнего уровня. Если для темы не задан список
+# подтем (или ни один паттерн не подошёл), используется единая подтема
+# "Общее" — тогда бот просто покажет список ссылок без промежуточного меню.
+SUBCATEGORY_RULES = {
+    "ИИ-инструменты": [
+        ("Тексты и чат-боты", r"chatgpt|gpt-|gpt\b|claude|llm\b|deepseek|qwen|glm-|чат.?бот|генератор текст"),
+        ("Изображения и дизайн", r"figma|изображени|дизайн|scribble|фото|napkin|pencil\.dev|designmd"),
+        ("Видео, музыка и звук", r"видео|музык|звук|suno|подкаст.{0,3}генера|voice|видеопрезентац|morise|evtexture"),
+        ("Разработка, код и агенты", r"github|code|скилл|copilot|агент|n8n|автоматизац|hh\.ru"),
+        ("Каталоги и подборки инструментов", r"каталог|подборк|directory|huggingface\.co/spaces"),
+    ],
+    "Промпты и гайды": [
+        ("Промпты для ChatGPT", r"chatgpt|gpt-|gpt\b|openai"),
+        ("Промпты для Claude", r"claude|anthropic"),
+        ("Промпты для генерации медиа", r"luma|sora|dream machine|изображени|видео"),
+        ("Гайды и мегапромпты", r"гайд|мегапромпт|учебник|инжинирин"),
+    ],
+    "Курсы и обучение": [
+        ("ИИ и нейронки", r"нейронк|\bии\b|\bai\b|llm\b|deep ?learning|reasoning|агент"),
+        ("Программирование и Data Science", r"python|code|data science|cs50|программир"),
+        ("Языки и произношение", r"английск|произношени|язык"),
+    ],
+    "Карьера и работа": [
+        ("Резюме", r"резюме"),
+        ("Собеседования", r"собес"),
+        ("Поиск работы и автоматизация откликов", r"hh\.ru|вакан|отклик|рекрутер|эйчар"),
+    ],
+    "Бизнес и стартапы": [
+        ("Бизнес-планы", r"бизнес.?план|planexe"),
+        ("Автоматизация и ИИ-агенты", r"агент|автоматизац|n8n"),
+        ("Стартапы", r"стартап"),
+    ],
+    "Турция и жизнь за границей": [
+        ("Недвижимость и тапу", r"тапу|недвижимост"),
+        ("Виза и ВНЖ", r"виза|внж"),
+        ("Быт (аптеки, транспорт, лекарства)", r"аптек|автобус|лекарств|мерсин|стамбул"),
+    ],
+    "Развлечения": [
+        ("Фильмы и сериалы", r"фильм|кино|сериал"),
+        ("Подкасты", r"подкаст"),
+    ],
+    "Продуктивность": [
+        ("Лайфхаки", r"лайфхак"),
+        ("Борьба с прокрастинацией", r"прокрастинац"),
+    ],
+}
+
+
+def subcategorize(category: str, text: str) -> str:
+    rules = SUBCATEGORY_RULES.get(category)
+    if not rules:
+        return "Общее"
+    low = text.lower()
+    for name, pattern in rules:
+        if re.search(pattern, low):
+            return name
+    return "Общее"
+
+
+def sub_names(category: str):
+    return [name for name, _ in SUBCATEGORY_RULES.get(category, [])] + ["Общее"]
+
+
+def sub_index(category: str, subcategory: str) -> int:
+    names = sub_names(category)
+    try:
+        return names.index(subcategory)
+    except ValueError:
+        return len(names) - 1  # "Общее"
+
+
+def sub_by_index(category: str, idx: int):
+    names = sub_names(category)
+    if 0 <= idx < len(names):
+        return names[idx]
+    return None
 
 
 # Историческая подборка (собрана вручную из всей переписки группы до
@@ -187,6 +279,7 @@ def setup_bot_ui():
         {"command": "find", "description": "Поиск по заголовкам: /find слово"},
         {"command": "export", "description": "Выгрузить всё в markdown-файл"},
         {"command": "seed", "description": "Загрузить историческую подборку ссылок"},
+        {"command": "chatinfo", "description": "Проверить тип чата (для ссылок на сообщения)"},
         {"command": "start", "description": "Помощь и список команд"},
     ]
     try:
@@ -223,7 +316,27 @@ def db():
         )
         """
     )
+    _ensure_subcategory_column(conn)
     return conn
+
+
+def _ensure_subcategory_column(conn):
+    """Добавляет колонку subcategory, если её ещё нет (для баз, созданных
+    до появления подтем), и один раз пересчитывает подтемы для старых строк."""
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(links)").fetchall()]
+    if "subcategory" not in cols:
+        conn.execute("ALTER TABLE links ADD COLUMN subcategory TEXT")
+        conn.commit()
+    rows = conn.execute(
+        "SELECT id, category, title FROM links WHERE subcategory IS NULL"
+    ).fetchall()
+    if rows:
+        with conn:
+            for row_id, category, title in rows:
+                conn.execute(
+                    "UPDATE links SET subcategory=? WHERE id=?",
+                    (subcategorize(category, title or ""), row_id),
+                )
 
 
 def get_last_bot_message(chat_id):
@@ -290,14 +403,15 @@ def message_link(chat_id, message_id):
 
 def save_links(chat_id, message_id, text, links, author):
     category = categorize(text)
+    subcategory = subcategorize(category, text)
     title = text.strip().replace("\n", " ")[:200]
     conn = db()
     with conn:
         for link in links:
             conn.execute(
-                "INSERT INTO links (chat_id, message_id, category, title, link, author, created_at) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (chat_id, message_id, category, title, link, author, datetime.utcnow().isoformat()),
+                "INSERT INTO links (chat_id, message_id, category, subcategory, title, link, author, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (chat_id, message_id, category, subcategory, title, link, author, datetime.utcnow().isoformat()),
             )
     conn.close()
     return category
@@ -315,7 +429,8 @@ def handle_start(chat_id):
         "/find слово — поиск по заголовкам\n"
         "/export — выгрузить всё одним markdown-файлом\n"
         "/seed — один раз загрузить историческую подборку (~70 ссылок, "
-        "собранных из переписки до подключения бота)",
+        "собранных из переписки до подключения бота)\n"
+        "/chatinfo — проверить, поддерживает ли этот чат ссылки на сообщения",
     )
 
 
@@ -331,10 +446,11 @@ def handle_seed(chat_id):
     with conn:
         for title, link, created_at in SEED_DATA:
             category = categorize(title)
+            subcategory = subcategorize(category, title)
             conn.execute(
-                "INSERT INTO links (chat_id, message_id, category, title, link, author, created_at) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (chat_id, 0, category, title, link, "seed", created_at),
+                "INSERT INTO links (chat_id, message_id, category, subcategory, title, link, author, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (chat_id, 0, category, subcategory, title, link, "seed", created_at),
             )
     conn.close()
     reply(chat_id, f"Загрузил {len(SEED_DATA)} ссылок из истории. Наберите /topics, чтобы посмотреть.")
@@ -350,21 +466,65 @@ def handle_topics(chat_id):
     if not rows:
         reply(chat_id, "Пока ничего не сохранено — присылайте ссылки в чат.")
         return
-    buttons = [[{"text": f"{cat} ({count})", "callback_data": f"cat:{cat}"}] for cat, count in rows]
+    buttons = [
+        [{"text": f"{cat} ({count})", "callback_data": f"cat:{cat_index(cat)}"}]
+        for cat, count in rows
+    ]
     reply(chat_id, "Темы:", reply_markup={"inline_keyboard": buttons})
 
 
-def handle_category(chat_id, category):
+def handle_category_menu(chat_id, category):
+    """По клику на тему: если внутри неё есть больше одной подтемы —
+    показываем меню подтем, иначе сразу список ссылок."""
     conn = db()
-    rows = conn.execute(
-        "SELECT title, link, message_id FROM links WHERE chat_id=? AND category=? ORDER BY id DESC LIMIT 20",
+    sub_rows = conn.execute(
+        "SELECT COALESCE(subcategory, 'Общее'), COUNT(*) FROM links "
+        "WHERE chat_id=? AND category=? GROUP BY 1 ORDER BY COUNT(*) DESC",
         (chat_id, category),
     ).fetchall()
     conn.close()
-    if not rows:
+    if not sub_rows:
         reply(chat_id, f"В теме «{category}» пока пусто.")
         return
-    lines = [f"*{category}*"]
+    if len(sub_rows) <= 1:
+        send_links_list(chat_id, category, None)
+        return
+    idx = cat_index(category)
+    buttons = [
+        [{"text": f"{sub} ({count})", "callback_data": f"sub:{idx}:{sub_index(category, sub)}"}]
+        for sub, count in sub_rows
+    ]
+    buttons.append([{"text": "Все ссылки в теме", "callback_data": f"suball:{idx}"}])
+    reply(
+        chat_id,
+        f"*{category}* — выберите подтему:",
+        reply_markup={"inline_keyboard": buttons},
+        parse_mode="Markdown",
+    )
+
+
+def send_links_list(chat_id, category, subcategory):
+    """Отправляет список ссылок в теме (и опционально в подтеме)."""
+    conn = db()
+    if subcategory is None:
+        rows = conn.execute(
+            "SELECT title, link, message_id FROM links WHERE chat_id=? AND category=? "
+            "ORDER BY id DESC LIMIT 20",
+            (chat_id, category),
+        ).fetchall()
+        header = category
+    else:
+        rows = conn.execute(
+            "SELECT title, link, message_id FROM links WHERE chat_id=? AND category=? "
+            "AND COALESCE(subcategory, 'Общее')=? ORDER BY id DESC LIMIT 20",
+            (chat_id, category, subcategory),
+        ).fetchall()
+        header = f"{category} → {subcategory}"
+    conn.close()
+    if not rows:
+        reply(chat_id, f"В теме «{header}» пока пусто.")
+        return
+    lines = [f"*{header}*"]
     for title, link, message_id in rows:
         safe_title = title.replace("[", "(").replace("]", ")")
         # Ведём на само сообщение в группе, если оно есть (а не на внешний
@@ -381,7 +541,8 @@ def handle_find(chat_id, keyword):
         return
     conn = db()
     rows = conn.execute(
-        "SELECT category, title, link, message_id FROM links WHERE chat_id=? AND title LIKE ? ORDER BY id DESC LIMIT 20",
+        "SELECT category, COALESCE(subcategory, 'Общее'), title, link, message_id FROM links "
+        "WHERE chat_id=? AND title LIKE ? ORDER BY id DESC LIMIT 20",
         (chat_id, f"%{keyword}%"),
     ).fetchall()
     conn.close()
@@ -389,16 +550,44 @@ def handle_find(chat_id, keyword):
         reply(chat_id, "Ничего не нашлось.")
         return
     lines = []
-    for cat, title, link, message_id in rows:
+    for cat, sub, title, link, message_id in rows:
         target = message_link(chat_id, message_id) or link
-        lines.append(f"*{cat}* — [{title[:70]}]({target})")
+        label = cat if sub == "Общее" else f"{cat} / {sub}"
+        lines.append(f"*{label}* — [{title[:70]}]({target})")
     reply(chat_id, "\n".join(lines), parse_mode="Markdown", disable_preview=True)
+
+
+def handle_chatinfo(chat_id):
+    try:
+        info = api_call("getChat", {"chat_id": chat_id})
+        result = info.get("result", {})
+        chat_type = result.get("type", "?")
+        title = result.get("title", "?")
+        note = (
+            "✅ Это супергруппа — ссылки на сообщения (t.me/c/…) должны работать."
+            if chat_type == "supergroup"
+            else "⚠️ Это НЕ супергруппа (тип: " + chat_type + ") — Telegram не поддерживает "
+            "прямые ссылки на сообщения в обычных группах, поэтому бот будет "
+            "показывать внешнюю ссылку вместо ссылки на сообщение. Чтобы это "
+            "исправить, нужно превратить группу в супергруппу (например, "
+            "включить в настройках группы историю чата для новых участников "
+            "или любую другую опцию, требующую супергруппу) — тогда id чата "
+            "изменится, и это отразится автоматически."
+        )
+        reply(
+            chat_id,
+            f"chat_id: `{chat_id}`\nтип: `{chat_type}`\nназвание: {title}\n\n{note}",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        reply(chat_id, f"Не удалось получить информацию о чате: {e}")
 
 
 def handle_export(chat_id):
     conn = db()
     rows = conn.execute(
-        "SELECT category, title, link, created_at FROM links WHERE chat_id=? ORDER BY category, id",
+        "SELECT category, COALESCE(subcategory, 'Общее'), title, link, created_at FROM links "
+        "WHERE chat_id=? ORDER BY category, subcategory, id",
         (chat_id,),
     ).fetchall()
     conn.close()
@@ -406,14 +595,19 @@ def handle_export(chat_id):
         reply(chat_id, "Пока нечего экспортировать.")
         return
     by_cat = {}
-    for cat, title, link, created_at in rows:
-        by_cat.setdefault(cat, []).append((title, link, created_at))
+    for cat, sub, title, link, created_at in rows:
+        by_cat.setdefault(cat, {}).setdefault(sub, []).append((title, link, created_at))
     lines = ["# Ссылки по темам\n"]
-    for cat, items in by_cat.items():
-        lines.append(f"\n## {cat} ({len(items)})\n")
-        for title, link, created_at in items:
-            date = created_at[:10]
-            lines.append(f"- **{date}** — {title[:120]} — [ссылка]({link})")
+    for cat, subs in by_cat.items():
+        total = sum(len(items) for items in subs.values())
+        lines.append(f"\n## {cat} ({total})\n")
+        has_multiple_subs = len(subs) > 1
+        for sub, items in subs.items():
+            if has_multiple_subs:
+                lines.append(f"\n### {sub} ({len(items)})\n")
+            for title, link, created_at in items:
+                date = created_at[:10]
+                lines.append(f"- **{date}** — {title[:120]} — [ссылка]({link})")
     path = "/tmp/export.md"
     with open(path, "w") as f:
         f.write("\n".join(lines))
@@ -428,8 +622,24 @@ def process_update(update):
         answer_callback(cq["id"])
         data = cq.get("data", "")
         chat_id = cq["message"]["chat"]["id"]
-        if data.startswith("cat:"):
-            handle_category(chat_id, data.split("cat:", 1)[1])
+        try:
+            if data.startswith("suball:"):
+                category = cat_by_index(int(data.split("suball:", 1)[1]))
+                if category:
+                    send_links_list(chat_id, category, None)
+            elif data.startswith("sub:"):
+                _, cidx, sidx = data.split(":")
+                category = cat_by_index(int(cidx))
+                if category:
+                    subcategory = sub_by_index(category, int(sidx))
+                    if subcategory:
+                        send_links_list(chat_id, category, subcategory)
+            elif data.startswith("cat:"):
+                category = cat_by_index(int(data.split("cat:", 1)[1]))
+                if category:
+                    handle_category_menu(chat_id, category)
+        except (ValueError, IndexError):
+            log.warning("Bad callback_data: %s", data)
         return
 
     msg = update.get("message")
@@ -454,6 +664,9 @@ def process_update(update):
         return
     if text.startswith("/seed"):
         handle_seed(chat_id)
+        return
+    if text.startswith("/chatinfo"):
+        handle_chatinfo(chat_id)
         return
 
     links = URL_RE.findall(text)
