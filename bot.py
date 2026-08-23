@@ -322,6 +322,7 @@ def setup_bot_ui():
         {"command": "seed", "description": "Загрузить историческую подборку ссылок"},
         {"command": "chatinfo", "description": "Проверить тип чата (для ссылок на сообщения)"},
         {"command": "reset", "description": "Удалить нерабочие ссылки перед повторной пересылкой"},
+        {"command": "clearseed", "description": "Удалить историческую подборку /seed"},
         {"command": "start", "description": "Помощь и список команд"},
     ]
     try:
@@ -502,7 +503,8 @@ def handle_start(chat_id):
         "/seed — один раз загрузить историческую подборку (~70 ссылок, "
         "собранных из переписки до подключения бота)\n"
         "/chatinfo — проверить, поддерживает ли этот чат ссылки на сообщения\n"
-        "/reset — удалить нерабочие ссылки перед повторной пересылкой (кроме /seed)",
+        "/reset — удалить нерабочие ссылки перед повторной пересылкой (кроме /seed)\n"
+        "/clearseed — удалить историческую подборку /seed (если она уже не нужна)",
     )
 
 
@@ -701,6 +703,21 @@ def handle_reset(chat_id):
                     f"Теперь можно пересылать сообщения заново — они сохранятся с рабочими ссылками на сообщения.")
 
 
+def handle_clearseed(chat_id):
+    """Удаляет только историческую подборку /seed (author='seed'), не
+    трогая реальные пересланные/сохранённые сообщения. Нужно, когда все
+    ссылки из подборки уже переслали заново вручную и старые записи с
+    внешними ссылками (не ведущими на сообщение) стали не нужны."""
+    conn = db()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM links WHERE chat_id=? AND author='seed'", (chat_id,)
+    ).fetchone()[0]
+    with conn:
+        conn.execute("DELETE FROM links WHERE chat_id=? AND author='seed'", (chat_id,))
+    conn.close()
+    reply(chat_id, f"Удалено {count} записей из исторической подборки /seed.")
+
+
 def handle_chatinfo(chat_id):
     try:
         info = api_call("getChat", {"chat_id": chat_id})
@@ -853,6 +870,9 @@ def process_update(update):
             return
         if text.startswith("/reset"):
             handle_reset(chat_id)
+            return
+        if text.startswith("/clearseed"):
+            handle_clearseed(chat_id)
             return
         if text.startswith("/debug"):
             handle_debug(chat_id)
