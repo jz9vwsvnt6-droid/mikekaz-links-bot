@@ -813,44 +813,56 @@ def process_update(update):
         migrate_chat(msg["chat"]["id"], new_chat_id)
         return
 
-    if "text" not in msg:
+    # У обычного текстового сообщения ссылка/текст лежит в "text", а у
+    # пересланного фото/видео/документа с подписью — в "caption" (поля
+    # "text" там вообще нет). Раньше бот проверял только "text", поэтому
+    # пересланные посты из каналов (обычно фото + подпись) молча
+    # пропускались целиком — этим и объясняется, почему пересылка "не
+    # работала", хотя обычные напечатанные сообщения сохранялись нормально.
+    text = msg.get("text")
+    caption = msg.get("caption")
+    if text is None and caption is None:
         return
     chat_id = msg["chat"]["id"]
-    text = msg["text"]
 
-    if text.startswith("/start") or text.startswith("/help"):
-        handle_start(chat_id)
-        return
-    if text.startswith("/topics"):
-        handle_topics(chat_id)
-        return
-    if text.startswith("/find"):
-        keyword = text[len("/find"):].strip()
-        handle_find(chat_id, keyword)
-        return
-    if text.startswith("/export"):
-        handle_export(chat_id)
-        return
-    if text.startswith("/seed"):
-        handle_seed(chat_id)
-        return
-    if text.startswith("/chatinfo"):
-        handle_chatinfo(chat_id)
-        return
-    if text.startswith("/reset"):
-        handle_reset(chat_id)
-        return
-    if text.startswith("/debug"):
-        handle_debug(chat_id)
-        return
+    # Команды распознаём только у настоящих текстовых сообщений, не у
+    # подписей к медиа (мало ли что окажется в подписи фото).
+    if text is not None:
+        if text.startswith("/start") or text.startswith("/help"):
+            handle_start(chat_id)
+            return
+        if text.startswith("/topics"):
+            handle_topics(chat_id)
+            return
+        if text.startswith("/find"):
+            keyword = text[len("/find"):].strip()
+            handle_find(chat_id, keyword)
+            return
+        if text.startswith("/export"):
+            handle_export(chat_id)
+            return
+        if text.startswith("/seed"):
+            handle_seed(chat_id)
+            return
+        if text.startswith("/chatinfo"):
+            handle_chatinfo(chat_id)
+            return
+        if text.startswith("/reset"):
+            handle_reset(chat_id)
+            return
+        if text.startswith("/debug"):
+            handle_debug(chat_id)
+            return
 
-    # Сохраняем ЛЮБОЕ обычное сообщение (не команду), даже если в нём нет
-    # внешней ссылки — это может быть просто текст/цитата, и пользователь
-    # всё равно хочет находить его через /topics с переходом к самому
-    # сообщению в чате.
-    links = extract_links(text, msg.get("entities", []))
+    # Сохраняем ЛЮБОЕ обычное сообщение (текст или подпись к медиа), даже
+    # если в нём нет внешней ссылки — это может быть просто текст/цитата
+    # или репост из канала с картинкой, и пользователь всё равно хочет
+    # находить его через /topics с переходом к самому сообщению в чате.
+    content = text if text is not None else caption
+    entities = msg.get("entities") if text is not None else msg.get("caption_entities")
+    links = extract_links(content, entities or [])
     author = msg.get("from", {}).get("first_name", "unknown")
-    category = save_links(chat_id, msg["message_id"], text, links, author)
+    category = save_links(chat_id, msg["message_id"], content, links, author)
     log.info("Saved message (%d link(s)) to '%s' from chat %s", len(links), category, chat_id)
 
 
