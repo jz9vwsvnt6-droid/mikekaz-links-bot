@@ -634,6 +634,31 @@ def handle_find(chat_id, keyword):
     reply(chat_id, "\n".join(lines), parse_mode="Markdown", disable_preview=True)
 
 
+def handle_debug(chat_id):
+    """Показывает сырые данные последних сохранённых записей (chat_id,
+    message_id, категория, начало заголовка) без всякого форматирования —
+    временная диагностическая команда, чтобы понять, почему message_link()
+    не формирует ссылку на сообщение для тех или иных записей."""
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, chat_id, message_id, category, author, substr(title, 1, 40) FROM links "
+        "WHERE chat_id=? ORDER BY id DESC LIMIT 8",
+        (chat_id,),
+    ).fetchall()
+    conn.close()
+    if not rows:
+        reply(chat_id, "Пусто.")
+        return
+    lines = [f"этот чат: {chat_id}", ""]
+    for row_id, row_chat_id, message_id, category, author, title in rows:
+        link_would_be = message_link(row_chat_id, message_id)
+        lines.append(
+            f"#{row_id} chat={row_chat_id} msg_id={message_id} author={author} "
+            f"cat={category}\n  title: {title}\n  link(): {link_would_be}\n"
+        )
+    reply(chat_id, "\n".join(lines))
+
+
 def handle_reset(chat_id):
     """Удаляет все НЕ-seed ссылки в этом чате (например, старые записи с
     message_id, не работающим после конвертации группы в супергруппу),
@@ -786,6 +811,9 @@ def process_update(update):
         return
     if text.startswith("/reset"):
         handle_reset(chat_id)
+        return
+    if text.startswith("/debug"):
+        handle_debug(chat_id)
         return
 
     links = URL_RE.findall(text)
