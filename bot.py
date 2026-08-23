@@ -410,6 +410,27 @@ def reply_document(chat_id, file_path, filename):
     return resp
 
 
+def migrate_chat(old_chat_id, new_chat_id):
+    """Обычная группа конвертирована в супергруппу — Telegram присылает
+    об этом служебное сообщение с новым chat_id. Переносим все сохранённые
+    строки (ссылки и bot_state) со старого id на новый, чтобы ничего не
+    потерялось и /topics сразу продолжил работать в новом чате."""
+    conn = db()
+    with conn:
+        conn.execute("UPDATE links SET chat_id=? WHERE chat_id=?", (new_chat_id, old_chat_id))
+        conn.execute(
+            "UPDATE OR IGNORE bot_state SET chat_id=? WHERE chat_id=?", (new_chat_id, old_chat_id)
+        )
+        conn.execute("DELETE FROM bot_state WHERE chat_id=?", (old_chat_id,))
+    conn.close()
+    log.info("Migrated data from basic group %s to supergroup %s", old_chat_id, new_chat_id)
+    try:
+        reply(new_chat_id, "Группа успешно превращена в супергруппу — все сохранённые ссылки перенесены, "
+                            "новые ссылки на сообщения (t.me/c/…) теперь будут работать. Наберите /topics.")
+    except Exception:
+        pass
+
+
 def message_link(chat_id, message_id):
     """Ссылка на оригинальное сообщение в группе (работает для супергрупп).
     Возвращает None, если сообщения не существует (например, для /seed —
@@ -708,7 +729,20 @@ def process_update(update):
         return
 
     msg = update.get("message")
-    if not msg or "text" not in msg:
+    if not msg:
+        return
+
+    # Служебное сообщение о конвертации обычной группы в супергруппу — у
+    # такого сообщения нет "text", поэтому проверяем его до общей проверки
+    # ниже. Переносим все сохранённые ссылки со старого chat_id на новый,
+    # иначе после конвертации /topics покажет пустоту (данные останутся
+    # привязаны к id, которого больше не существует).
+    new_chat_id = msg.get("migrate_to_chat_id")
+    if new_chat_id:
+        migrate_chat(msg["chat"]["id"], new_chat_id)
+        return
+
+    if "text" not in msg:
         return
     chat_id = msg["chat"]["id"]
     text = msg["text"]
