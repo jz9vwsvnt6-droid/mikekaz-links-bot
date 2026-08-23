@@ -303,6 +303,7 @@ def setup_bot_ui():
         {"command": "export", "description": "Выгрузить всё в markdown-файл"},
         {"command": "seed", "description": "Загрузить историческую подборку ссылок"},
         {"command": "chatinfo", "description": "Проверить тип чата (для ссылок на сообщения)"},
+        {"command": "reset", "description": "Удалить нерабочие ссылки перед повторной пересылкой"},
         {"command": "start", "description": "Помощь и список команд"},
     ]
     try:
@@ -474,7 +475,8 @@ def handle_start(chat_id):
         "/export — выгрузить всё одним markdown-файлом\n"
         "/seed — один раз загрузить историческую подборку (~70 ссылок, "
         "собранных из переписки до подключения бота)\n"
-        "/chatinfo — проверить, поддерживает ли этот чат ссылки на сообщения",
+        "/chatinfo — проверить, поддерживает ли этот чат ссылки на сообщения\n"
+        "/reset — удалить нерабочие ссылки перед повторной пересылкой (кроме /seed)",
     )
 
 
@@ -632,6 +634,22 @@ def handle_find(chat_id, keyword):
     reply(chat_id, "\n".join(lines), parse_mode="Markdown", disable_preview=True)
 
 
+def handle_reset(chat_id):
+    """Удаляет все НЕ-seed ссылки в этом чате (например, старые записи с
+    message_id, не работающим после конвертации группы в супергруппу),
+    чтобы можно было переслать всё заново начисто, без дублей. Историческая
+    подборка /seed не трогается."""
+    conn = db()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM links WHERE chat_id=? AND author!='seed'", (chat_id,)
+    ).fetchone()[0]
+    with conn:
+        conn.execute("DELETE FROM links WHERE chat_id=? AND author!='seed'", (chat_id,))
+    conn.close()
+    reply(chat_id, f"Удалено {count} ссылок (кроме исторической подборки /seed). "
+                    f"Теперь можно пересылать сообщения заново — они сохранятся с рабочими ссылками на сообщения.")
+
+
 def handle_chatinfo(chat_id):
     try:
         info = api_call("getChat", {"chat_id": chat_id})
@@ -765,6 +783,9 @@ def process_update(update):
         return
     if text.startswith("/chatinfo"):
         handle_chatinfo(chat_id)
+        return
+    if text.startswith("/reset"):
+        handle_reset(chat_id)
         return
 
     links = URL_RE.findall(text)
