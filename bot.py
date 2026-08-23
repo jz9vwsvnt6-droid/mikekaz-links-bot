@@ -1,24 +1,3 @@
-Ты работаешь через расширение Claude in Chrome в браузере пользователя. Нужно обновить файл bot.py в GitHub-репозитории пользователя, чтобы обновление подхватилось на Railway (репозиторий уже подключён к Railway с автодеплоем на push в main).
-
-Репозиторий: https://github.com/jz9vwsvnt6-droid/mikekaz-links-bot
-
-ВАЖНО — используй проверенный способ, который уже сработал дважды: НЕ вводи текст в редактор GitHub посимвольно (JS-инъекция File-объекта в прошлый раз тоже была заблокирована защитным классификатором браузерной сессии). Вместо этого:
-
-1. Открой https://github.com/jz9vwsvnt6-droid/mikekaz-links-bot/upload/main
-2. Дождись, пока пользователь сам перетащит (drag-and-drop) файл bot.py на эту страницу — файл ему нужно будет прислать отдельно, он уже готов у него на устройстве. Если пользователь ещё не перетащил файл — просто дождись этого, не пытайся эмулировать drag-and-drop через JavaScript.
-3. Убедись, что в списке загружаемых файлов ровно один bot.py (не дублируется).
-4. Прокрути вниз, впиши commit message: "Add back buttons to submenus" и нажми "Commit changes..." → "Commit changes" (коммит прямо в ветку main, опция "Commit directly to the main branch" обычно уже выбрана).
-5. После коммита открой сам файл на GitHub (Code-вкладка, НЕ get_page_text, т.к. он может обрезать отступы при отображении) и сверь пару фрагментов с кодом ниже — например функцию handle_category_menu и process_update — чтобы убедиться, что отступы (4 пробела) сохранились корректно.
-6. Открой https://railway.app, зайди в проект с этим ботом → вкладка Deployments. Дождись, пока новый деплой (триггернутый пушем) перейдёт в статус "Success"/"Active", открой Deploy Logs — убедись, что нет ошибок и видны строки вида "Bot starting (long polling)..." и "Command menu registered".
-7. Если увидишь ошибку в логах — сделай скриншот и опиши её пользователю, не пытайся чинить код самостоятельно.
-
-Что изменилось в новой версии bot.py (для контекста, отдельно ничего делать не нужно — всё уже в коде ниже):
-- Во все подменю (меню подтем внутри темы, финальный список ссылок) добавлена кнопка "◀️ Назад" — из списка ссылок она возвращает в меню подтем (если оно было показано для этой темы) либо сразу в список тем (если у темы не было подменю подтем); из меню подтем — всегда в список тем. Реализовано через новые callback_data "back:home" и "back:cat:<idx>" и функцию category_has_submenu().
-- Остальной функционал (подтемы, ссылки на оригинальные сообщения, автоудаление предыдущего ответа бота, /chatinfo) не менялся.
-
-Важно: файл около 740 строк, дожидайся ручной загрузки от пользователя, не пытайся сформировать File-объект через JavaScript — это заблокировано.
-
-===BOT_PY_START===
 """
 Mikhail Links Bot — без внешних зависимостей, только стандартная библиотека Python.
 
@@ -40,6 +19,7 @@ import logging
 import time
 import urllib.request
 import urllib.parse
+import urllib.error
 from datetime import datetime
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -251,8 +231,19 @@ def api_call(method, params=None, files=None, timeout=35):
         raise NotImplementedError
     data = urllib.parse.urlencode(params or {}).encode()
     req = urllib.request.Request(url, data=data)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        # Telegram кладёт реальную причину ошибки в тело ответа (JSON с полем
+        # "description"), а не просто в HTTP-статус — вытаскиваем её, иначе
+        # видно только бесполезное "HTTP Error 400: Bad Request".
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            desc = json.loads(body).get("description", body)
+        except Exception:
+            desc = body
+        raise RuntimeError(f"Telegram API [{method}] {e.code}: {desc}") from e
 
 
 def send_message(chat_id, text, reply_markup=None, parse_mode=None, disable_preview=False):
@@ -760,4 +751,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-===BOT_PY_END===
