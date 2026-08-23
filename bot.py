@@ -46,6 +46,15 @@ CATEGORY_RULES = [
 
 CATEGORY_NAMES = [name for name, _ in CATEGORY_RULES] + ["Разное"]
 
+MD_SPECIAL_RE = re.compile(r"([_*`\[])")
+
+
+def md_escape(text: str) -> str:
+    """Экранирует спецсимволы легаси-Markdown Telegram (_, *, `, [), чтобы
+    произвольный текст (заголовки сообщений пользователей) не ломал парсер
+    ошибкой "can't parse entities" при отправке с parse_mode=Markdown."""
+    return MD_SPECIAL_RE.sub(r"\\\1", text)
+
 
 def categorize(text: str) -> str:
     low = text.lower()
@@ -564,7 +573,7 @@ def send_links_list(chat_id, category, subcategory):
         return
     lines = [f"*{header}*"]
     for title, link, message_id in rows:
-        safe_title = title.replace("[", "(").replace("]", ")")
+        safe_title = md_escape(title.replace("[", "(").replace("]", ")"))
         # Ведём на само сообщение в группе, если оно есть (а не на внешний
         # сайт из ссылки); для исторических /seed-записей message_id=0 —
         # для них оставляем внешнюю ссылку, т.к. привязанного сообщения нет.
@@ -597,7 +606,8 @@ def handle_find(chat_id, keyword):
     for cat, sub, title, link, message_id in rows:
         target = message_link(chat_id, message_id) or link
         label = cat if sub == "Общее" else f"{cat} / {sub}"
-        lines.append(f"*{label}* — [{title[:70]}]({target})")
+        safe_title = md_escape(title.replace("[", "(").replace("]", ")"))
+        lines.append(f"*{label}* — [{safe_title[:70]}]({target})")
     reply(chat_id, "\n".join(lines), parse_mode="Markdown", disable_preview=True)
 
 
@@ -618,10 +628,12 @@ def handle_chatinfo(chat_id):
             "или любую другую опцию, требующую супергруппу) — тогда id чата "
             "изменится, и это отразится автоматически."
         )
+        # Без parse_mode: заголовок/тип чата может содержать символы вроде
+        # "_", которые легаси-Markdown Telegram трактует как начало
+        # форматирования и роняет отправку с "can't parse entities".
         reply(
             chat_id,
-            f"chat_id: `{chat_id}`\nтип: `{chat_type}`\nназвание: {title}\n\n{note}",
-            parse_mode="Markdown",
+            f"chat id: {chat_id}\nтип: {chat_type}\nназвание: {title}\n\n{note}",
         )
     except Exception as e:
         reply(chat_id, f"Не удалось получить информацию о чате: {e}")
