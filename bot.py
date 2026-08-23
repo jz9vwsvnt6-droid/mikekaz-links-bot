@@ -173,6 +173,30 @@ def answer_callback(callback_id):
     api_call("answerCallbackQuery", {"callback_query_id": callback_id})
 
 
+def delete_message(chat_id, message_id):
+    try:
+        api_call("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+    except Exception:
+        pass  # уже удалено вручную, слишком старое или бот не админ — не критично
+
+
+def setup_bot_ui():
+    """Регистрирует список команд и кнопку меню, чтобы они были видны в чате."""
+    commands = [
+        {"command": "topics", "description": "Список тем со ссылками"},
+        {"command": "find", "description": "Поиск по заголовкам: /find слово"},
+        {"command": "export", "description": "Выгрузить всё в markdown-файл"},
+        {"command": "seed", "description": "Загрузить историческую подборку ссылок"},
+        {"command": "start", "description": "Помощь и список команд"},
+    ]
+    try:
+        api_call("setMyCommands", {"commands": json.dumps(commands)})
+        api_call("setChatMenuButton", {"menu_button": json.dumps({"type": "commands"})})
+        log.info("Command menu registered")
+    except Exception as e:
+        log.warning("Failed to register command menu: %s", e)
+
+
 # --- storage -----------------------------------------------------------------
 
 def db():
@@ -191,7 +215,77 @@ def db():
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bot_state (
+            chat_id INTEGER PRIMARY KEY,
+            last_message_id INTEGER
+        )
+        """
+    )
     return conn
+
+
+def get_last_bot_message(chat_id):
+    conn = db()
+    row = conn.execute(
+        "SELECT last_message_id FROM bot_state WHERE chat_id=?", (chat_id,)
+    ).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def set_last_bot_message(chat_id, message_id):
+    conn = db()
+    with conn:
+        conn.execute(
+            "INSERT INTO bot_state (chat_id, last_message_id) VALUES (?,?) "
+            "ON CONFLICT(chat_id) DO UPDATE SET last_message_id=excluded.last_message_id",
+            (chat_id, message_id),
+        )
+    conn.close()
+
+
+def reply(chat_id, text, reply_markup=None, parse_mode=None, disable_preview=False):
+    """Отправляет сообщение и удаляет предыдущее сообщение бота в этом чате,
+    чтобы не захламлять историю повторными ответами на команды/кнопки."""
+    last_id = get_last_bot_message(chat_id)
+    if last_id:
+        delete_message(chat_id, last_id)
+    resp = send_message(
+        chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, disable_preview=disable_preview
+    )
+    try:
+        set_last_bot_message(chat_id, resp["result"]["message_id"])
+    except Exception:
+        pass
+    return resp
+
+
+def reply_document(chat_id, file_path, filename):
+    last_id = get_last_bot_message(chat_id)
+    if last_id:
+        delete_message(chat_id, last_id)
+    resp = send_document(chat_id, file_path, filename)
+    try:
+        set_last_bot_message(chat_id, resp["result"]["message_id"])
+    except Exception:
+        pass
+    return resp
+
+
+def message_link(chat_id, message_id):
+    """Ссылка на оригинальное сообщение в группе (работает для супергрупп).
+    Возвращает None, если сообщения не существует (например, для /seed —
+    там message_id=0, т.к. это исторические записи без привязки к чату)."""
+    if not message_id:
+        return None
+    cid = str(chat_id)
+    if cid.startswith("-100"):
+        cid = cid[4:]
+    elif cid.startswith("-"):
+        cid = cid[1:]
+    return f"https://t.me/c/{cid}/{message_id}"
 
 
 def save_links(chat_id, message_id, text, links, author):
@@ -212,7 +306,7 @@ def save_links(chat_id, message_id, text, links, author):
 # --- command handling ---------------------------------------------------------
 
 def handle_start(chat_id):
-    send_message(
+    reply(
         chat_id,
         "Привет! Я слежу за этим чатом и автоматически раскладываю по темам все "
         "ссылки, которые сюда присылают.\n\n"
@@ -232,7 +326,7 @@ def handle_seed(chat_id):
     ).fetchone()[0]
     if already:
         conn.close()
-        send_message(chat_id, "Историческая подборка уже загружена в этот чат ранее.")
+        reply(chat_id, "Историческая подборка уже загружена в этот чат ранее.")
         return
     with conn:
         for title, link, created_at in SEED_DATA:
@@ -243,7 +337,7 @@ def handle_seed(chat_id):
                 (chat_id, 0, category, title, link, "seed", created_at),
             )
     conn.close()
-    send_message(chat_id, f"Загрузил {len(SEED_DATA)} ссылок из истории. Наберите /topics, чтобы посмотреть.")
+    reply(chat_id, f"Загрузил {len(SEED_DATA)} ссылок из истории. Наберите /topics, чтобы посмотреть.")
 
 
 def handle_topics(chat_id):
@@ -254,44 +348,51 @@ def handle_topics(chat_id):
     ).fetchall()
     conn.close()
     if not rows:
-        send_message(chat_id, "Пока ничего не сохранено — присылайте ссылки в чат.")
+        reply(chat_id, "Пока ничего не сохранено — присылайте ссылки в чат.")
         return
     buttons = [[{"text": f"{cat} ({count})", "callback_data": f"cat:{cat}"}] for cat, count in rows]
-    send_message(chat_id, "Темы:", reply_markup={"inline_keyboard": buttons})
+    reply(chat_id, "Темы:", reply_markup={"inline_keyboard": buttons})
 
 
 def handle_category(chat_id, category):
     conn = db()
     rows = conn.execute(
-        "SELECT title, link FROM links WHERE chat_id=? AND category=? ORDER BY id DESC LIMIT 20",
+        "SELECT title, link, message_id FROM links WHERE chat_id=? AND category=? ORDER BY id DESC LIMIT 20",
         (chat_id, category),
     ).fetchall()
     conn.close()
     if not rows:
-        send_message(chat_id, f"В теме «{category}» пока пусто.")
+        reply(chat_id, f"В теме «{category}» пока пусто.")
         return
     lines = [f"*{category}*"]
-    for title, link in rows:
+    for title, link, message_id in rows:
         safe_title = title.replace("[", "(").replace("]", ")")
-        lines.append(f"- [{safe_title[:80]}]({link})")
-    send_message(chat_id, "\n".join(lines), parse_mode="Markdown", disable_preview=True)
+        # Ведём на само сообщение в группе, если оно есть (а не на внешний
+        # сайт из ссылки); для исторических /seed-записей message_id=0 —
+        # для них оставляем внешнюю ссылку, т.к. привязанного сообщения нет.
+        target = message_link(chat_id, message_id) or link
+        lines.append(f"- [{safe_title[:80]}]({target})")
+    reply(chat_id, "\n".join(lines), parse_mode="Markdown", disable_preview=True)
 
 
 def handle_find(chat_id, keyword):
     if not keyword:
-        send_message(chat_id, "Использование: /find слово")
+        reply(chat_id, "Использование: /find слово")
         return
     conn = db()
     rows = conn.execute(
-        "SELECT category, title, link FROM links WHERE chat_id=? AND title LIKE ? ORDER BY id DESC LIMIT 20",
+        "SELECT category, title, link, message_id FROM links WHERE chat_id=? AND title LIKE ? ORDER BY id DESC LIMIT 20",
         (chat_id, f"%{keyword}%"),
     ).fetchall()
     conn.close()
     if not rows:
-        send_message(chat_id, "Ничего не нашлось.")
+        reply(chat_id, "Ничего не нашлось.")
         return
-    lines = [f"*{cat}* — [{title[:70]}]({link})" for cat, title, link in rows]
-    send_message(chat_id, "\n".join(lines), parse_mode="Markdown", disable_preview=True)
+    lines = []
+    for cat, title, link, message_id in rows:
+        target = message_link(chat_id, message_id) or link
+        lines.append(f"*{cat}* — [{title[:70]}]({target})")
+    reply(chat_id, "\n".join(lines), parse_mode="Markdown", disable_preview=True)
 
 
 def handle_export(chat_id):
@@ -302,24 +403,21 @@ def handle_export(chat_id):
     ).fetchall()
     conn.close()
     if not rows:
-        send_message(chat_id, "Пока нечего экспортировать.")
+        reply(chat_id, "Пока нечего экспортировать.")
         return
-
     by_cat = {}
     for cat, title, link, created_at in rows:
         by_cat.setdefault(cat, []).append((title, link, created_at))
-
     lines = ["# Ссылки по темам\n"]
     for cat, items in by_cat.items():
         lines.append(f"\n## {cat} ({len(items)})\n")
         for title, link, created_at in items:
             date = created_at[:10]
             lines.append(f"- **{date}** — {title[:120]} — [ссылка]({link})")
-
     path = "/tmp/export.md"
     with open(path, "w") as f:
         f.write("\n".join(lines))
-    send_document(chat_id, path, "ссылки-по-темам.md")
+    reply_document(chat_id, path, "ссылки-по-темам.md")
 
 
 # --- update loop ---------------------------------------------------------------
@@ -337,6 +435,7 @@ def process_update(update):
     msg = update.get("message")
     if not msg or "text" not in msg:
         return
+
     chat_id = msg["chat"]["id"]
     text = msg["text"]
 
@@ -367,7 +466,9 @@ def process_update(update):
 def main():
     if not BOT_TOKEN:
         raise SystemExit("Set BOT_TOKEN environment variable")
+
     log.info("Bot starting (long polling)...")
+    setup_bot_ui()
     offset = 0
     while True:
         try:
@@ -376,6 +477,7 @@ def main():
             log.warning("getUpdates failed: %s — retrying in 5s", e)
             time.sleep(5)
             continue
+
         for update in resp.get("result", []):
             offset = update["update_id"] + 1
             try:
