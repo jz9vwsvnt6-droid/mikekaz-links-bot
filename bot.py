@@ -1,3 +1,24 @@
+Ты работаешь через расширение Claude in Chrome в браузере пользователя. Нужно обновить файл bot.py в GitHub-репозитории пользователя, чтобы обновление подхватилось на Railway (репозиторий уже подключён к Railway с автодеплоем на push в main).
+
+Репозиторий: https://github.com/jz9vwsvnt6-droid/mikekaz-links-bot
+
+ВАЖНО — используй проверенный способ, который уже сработал дважды: НЕ вводи текст в редактор GitHub посимвольно (JS-инъекция File-объекта в прошлый раз тоже была заблокирована защитным классификатором браузерной сессии). Вместо этого:
+
+1. Открой https://github.com/jz9vwsvnt6-droid/mikekaz-links-bot/upload/main
+2. Дождись, пока пользователь сам перетащит (drag-and-drop) файл bot.py на эту страницу — файл ему нужно будет прислать отдельно, он уже готов у него на устройстве. Если пользователь ещё не перетащил файл — просто дождись этого, не пытайся эмулировать drag-and-drop через JavaScript.
+3. Убедись, что в списке загружаемых файлов ровно один bot.py (не дублируется).
+4. Прокрути вниз, впиши commit message: "Add back buttons to submenus" и нажми "Commit changes..." → "Commit changes" (коммит прямо в ветку main, опция "Commit directly to the main branch" обычно уже выбрана).
+5. После коммита открой сам файл на GitHub (Code-вкладка, НЕ get_page_text, т.к. он может обрезать отступы при отображении) и сверь пару фрагментов с кодом ниже — например функцию handle_category_menu и process_update — чтобы убедиться, что отступы (4 пробела) сохранились корректно.
+6. Открой https://railway.app, зайди в проект с этим ботом → вкладка Deployments. Дождись, пока новый деплой (триггернутый пушем) перейдёт в статус "Success"/"Active", открой Deploy Logs — убедись, что нет ошибок и видны строки вида "Bot starting (long polling)..." и "Command menu registered".
+7. Если увидишь ошибку в логах — сделай скриншот и опиши её пользователю, не пытайся чинить код самостоятельно.
+
+Что изменилось в новой версии bot.py (для контекста, отдельно ничего делать не нужно — всё уже в коде ниже):
+- Во все подменю (меню подтем внутри темы, финальный список ссылок) добавлена кнопка "◀️ Назад" — из списка ссылок она возвращает в меню подтем (если оно было показано для этой темы) либо сразу в список тем (если у темы не было подменю подтем); из меню подтем — всегда в список тем. Реализовано через новые callback_data "back:home" и "back:cat:<idx>" и функцию category_has_submenu().
+- Остальной функционал (подтемы, ссылки на оригинальные сообщения, автоудаление предыдущего ответа бота, /chatinfo) не менялся.
+
+Важно: файл около 740 строк, дожидайся ручной загрузки от пользователя, не пытайся сформировать File-объект через JavaScript — это заблокировано.
+
+===BOT_PY_START===
 """
 Mikhail Links Bot — без внешних зависимостей, только стандартная библиотека Python.
 
@@ -475,6 +496,19 @@ def handle_topics(chat_id):
     reply(chat_id, "Темы:", reply_markup={"inline_keyboard": buttons})
 
 
+def category_has_submenu(chat_id, category):
+    """True, если у темы больше одной подтемы (значит, по клику на тему
+    показывается промежуточное меню подтем, а не сразу список ссылок)."""
+    conn = db()
+    count = conn.execute(
+        "SELECT COUNT(DISTINCT COALESCE(subcategory, 'Общее')) FROM links "
+        "WHERE chat_id=? AND category=?",
+        (chat_id, category),
+    ).fetchone()[0]
+    conn.close()
+    return count > 1
+
+
 def handle_category_menu(chat_id, category):
     """По клику на тему: если внутри неё есть больше одной подтемы —
     показываем меню подтем, иначе сразу список ссылок."""
@@ -486,7 +520,8 @@ def handle_category_menu(chat_id, category):
     ).fetchall()
     conn.close()
     if not sub_rows:
-        reply(chat_id, f"В теме «{category}» пока пусто.")
+        reply(chat_id, f"В теме «{category}» пока пусто.",
+              reply_markup={"inline_keyboard": [[{"text": "◀️ Назад к темам", "callback_data": "back:home"}]]})
         return
     if len(sub_rows) <= 1:
         send_links_list(chat_id, category, None)
@@ -497,6 +532,7 @@ def handle_category_menu(chat_id, category):
         for sub, count in sub_rows
     ]
     buttons.append([{"text": "Все ссылки в теме", "callback_data": f"suball:{idx}"}])
+    buttons.append([{"text": "◀️ Назад к темам", "callback_data": "back:home"}])
     reply(
         chat_id,
         f"*{category}* — выберите подтему:",
@@ -507,6 +543,15 @@ def handle_category_menu(chat_id, category):
 
 def send_links_list(chat_id, category, subcategory):
     """Отправляет список ссылок в теме (и опционально в подтеме)."""
+    idx = cat_index(category)
+    has_submenu = category_has_submenu(chat_id, category)
+    # Если у темы есть меню подтем — «Назад» возвращает в него, иначе —
+    # сразу в список тем (промежуточного меню подтем для этой темы не было).
+    back_button = (
+        {"text": "◀️ Назад", "callback_data": f"back:cat:{idx}"}
+        if has_submenu
+        else {"text": "◀️ Назад к темам", "callback_data": "back:home"}
+    )
     conn = db()
     if subcategory is None:
         rows = conn.execute(
@@ -524,7 +569,7 @@ def send_links_list(chat_id, category, subcategory):
         header = f"{category} → {subcategory}"
     conn.close()
     if not rows:
-        reply(chat_id, f"В теме «{header}» пока пусто.")
+        reply(chat_id, f"В теме «{header}» пока пусто.", reply_markup={"inline_keyboard": [[back_button]]})
         return
     lines = [f"*{header}*"]
     for title, link, message_id in rows:
@@ -534,7 +579,13 @@ def send_links_list(chat_id, category, subcategory):
         # для них оставляем внешнюю ссылку, т.к. привязанного сообщения нет.
         target = message_link(chat_id, message_id) or link
         lines.append(f"- [{safe_title[:80]}]({target})")
-    reply(chat_id, "\n".join(lines), parse_mode="Markdown", disable_preview=True)
+    reply(
+        chat_id,
+        "\n".join(lines),
+        parse_mode="Markdown",
+        disable_preview=True,
+        reply_markup={"inline_keyboard": [[back_button]]},
+    )
 
 
 def handle_find(chat_id, keyword):
@@ -628,7 +679,13 @@ def process_update(update):
         data = cq.get("data", "")
         chat_id = cq["message"]["chat"]["id"]
         try:
-            if data.startswith("suball:"):
+            if data == "back:home":
+                handle_topics(chat_id)
+            elif data.startswith("back:cat:"):
+                category = cat_by_index(int(data.split("back:cat:", 1)[1]))
+                if category:
+                    handle_category_menu(chat_id, category)
+            elif data.startswith("suball:"):
                 category = cat_by_index(int(data.split("suball:", 1)[1]))
                 if category:
                     send_links_list(chat_id, category, None)
@@ -703,3 +760,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+===BOT_PY_END===
