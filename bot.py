@@ -465,21 +465,25 @@ def message_link(chat_id, message_id):
 
 
 def save_links(chat_id, message_id, text, links, author):
-    """Сохраняет сообщение. Если в нём есть ссылки (обычные или спрятанные
-    за гиперссылкой) — по одной строке на каждую. Если ссылок нет (просто
-    текст/цитата) — всё равно сохраняем ОДНУ строку с пустым link: при
-    отображении бот в этом случае ведёт на само сообщение в чате."""
+    """Сохраняет сообщение — РОВНО ОДНОЙ строкой, даже если в нём несколько
+    ссылок (например, ссылка на статью и отдельно на канал в подписи).
+    Раньше на каждую ссылку в сообщении заводилась своя строка, а поскольку
+    переход всегда ведёт на само сообщение (message_link имеет приоритет
+    над полем link), это давало видимые дубли одного и того же сообщения в
+    /topics. Первая найденная ссылка (если есть) сохраняется как побочная
+    внешняя ссылка — используется только как запасной вариант, когда
+    message_link недоступен (например, для /seed-записей)."""
     category = categorize(text)
     subcategory = subcategorize(category, text)
     title = text.strip().replace("\n", " ")[:200]
+    link = links[0] if links else ""
     conn = db()
     with conn:
-        for link in (links or [""]):
-            conn.execute(
-                "INSERT INTO links (chat_id, message_id, category, subcategory, title, link, author, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (chat_id, message_id, category, subcategory, title, link, author, datetime.utcnow().isoformat()),
-            )
+        conn.execute(
+            "INSERT INTO links (chat_id, message_id, category, subcategory, title, link, author, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (chat_id, message_id, category, subcategory, title, link, author, datetime.utcnow().isoformat()),
+        )
     conn.close()
     return category
 
