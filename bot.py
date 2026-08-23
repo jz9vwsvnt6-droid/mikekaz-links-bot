@@ -41,6 +41,8 @@ CATEGORY_RULES = [
     ("Развлечения", r"фильм|подкаст|кино|сериал"),
     ("ИИ-инструменты", r"нейронк|ии.?инструмент|ai.?tool|chatgpt|claude|gpt|скилл|figma|huggingface|github"),
 ]
+
+
 CATEGORY_NAMES = [name for name, _ in CATEGORY_RULES] + ["Разное"]
 
 
@@ -594,9 +596,11 @@ def handle_export(chat_id):
     if not rows:
         reply(chat_id, "Пока нечего экспортировать.")
         return
+
     by_cat = {}
     for cat, sub, title, link, created_at in rows:
         by_cat.setdefault(cat, {}).setdefault(sub, []).append((title, link, created_at))
+
     lines = ["# Ссылки по темам\n"]
     for cat, subs in by_cat.items():
         total = sum(len(items) for items in subs.values())
@@ -608,6 +612,7 @@ def handle_export(chat_id):
             for title, link, created_at in items:
                 date = created_at[:10]
                 lines.append(f"- **{date}** — {title[:120]} — [ссылка]({link})")
+
     path = "/tmp/export.md"
     with open(path, "w") as f:
         f.write("\n".join(lines))
@@ -645,7 +650,6 @@ def process_update(update):
     msg = update.get("message")
     if not msg or "text" not in msg:
         return
-
     chat_id = msg["chat"]["id"]
     text = msg["text"]
 
@@ -679,7 +683,6 @@ def process_update(update):
 def main():
     if not BOT_TOKEN:
         raise SystemExit("Set BOT_TOKEN environment variable")
-
     log.info("Bot starting (long polling)...")
     setup_bot_ui()
     offset = 0
@@ -690,7 +693,6 @@ def main():
             log.warning("getUpdates failed: %s — retrying in 5s", e)
             time.sleep(5)
             continue
-
         for update in resp.get("result", []):
             offset = update["update_id"] + 1
             try:
