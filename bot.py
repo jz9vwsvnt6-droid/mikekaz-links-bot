@@ -604,17 +604,22 @@ def send_links_list(chat_id, category, subcategory):
         else {"text": "◀️ Назад к темам", "callback_data": "back:home"}
     )
     conn = db()
+    # Сортируем по message_id (реальный порядок появления сообщений в самой
+    # супергруппе), а не по id в нашей базе — id отражает порядок, в котором
+    # МЫ их сохраняли (зависит от /reset и повторных пересылок), а
+    # message_id всегда растёт строго по историческому порядку в чате,
+    # независимо от того, сколько раз данные пересобирались.
     if subcategory is None:
         rows = conn.execute(
             "SELECT title, link, message_id FROM links WHERE chat_id=? AND category=? "
-            "ORDER BY id DESC LIMIT 20",
+            "ORDER BY message_id DESC, id DESC LIMIT 20",
             (chat_id, category),
         ).fetchall()
         header = category
     else:
         rows = conn.execute(
             "SELECT title, link, message_id FROM links WHERE chat_id=? AND category=? "
-            "AND COALESCE(subcategory, 'Общее')=? ORDER BY id DESC LIMIT 20",
+            "AND COALESCE(subcategory, 'Общее')=? ORDER BY message_id DESC, id DESC LIMIT 20",
             (chat_id, category, subcategory),
         ).fetchall()
         header = f"{category} → {subcategory}"
@@ -646,7 +651,7 @@ def handle_find(chat_id, keyword):
     conn = db()
     rows = conn.execute(
         "SELECT category, COALESCE(subcategory, 'Общее'), title, link, message_id FROM links "
-        "WHERE chat_id=? AND title LIKE ? ORDER BY id DESC LIMIT 20",
+        "WHERE chat_id=? AND title LIKE ? ORDER BY message_id DESC, id DESC LIMIT 20",
         (chat_id, f"%{keyword}%"),
     ).fetchall()
     conn.close()
